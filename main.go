@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 )
 
 var JUPYTERHUB_SECRET_KEY = "32-byte-long-key-1234567890ABCDE"
+var JUPYTERHUB_HASH_KEY = "jupyterhub_hash_key"
 
 type user struct {
 	JupyterhubUserid string `json:"jupyterhub_user_id"`
@@ -101,8 +104,8 @@ var (
 	jupyterURL = "http://localhost:8005/hub/login" // Replace with your JupyterHub URL
 )
 
-func Encrypt(key, data []byte) (string, error) {
-	block, err := aes.NewCipher(key)
+func EncryptAndHash(encryptionKey, hashKey, data []byte) (string, error) {
+	block, err := aes.NewCipher(encryptionKey)
 	if err != nil {
 		return "", err
 	}
@@ -113,7 +116,21 @@ func Encrypt(key, data []byte) (string, error) {
 	}
 	stream := cipher.NewCFBEncrypter(block, iv)
 	stream.XORKeyStream(ciphertext[aes.BlockSize:], data)
-	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
+
+	// Generate HMAC for the ciphertext
+	hash := GenerateHMAC(hashKey, ciphertext)
+
+	// Append hash to the ciphertext
+	token := append(ciphertext, hash...)
+
+	return base64.RawURLEncoding.EncodeToString(token), nil
+}
+
+// GenerateHMAC generates an HMAC for a given message and key
+func GenerateHMAC(key, message []byte) []byte {
+	hash := hmac.New(sha256.New, key)
+	hash.Write(message)
+	return hash.Sum(nil)
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +147,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	time.Sleep(time.Second * 2)
 
-	encryptedDataString, err := Encrypt([]byte(JUPYTERHUB_SECRET_KEY), jsonData)
+	token, err := EncryptAndHash([]byte(JUPYTERHUB_SECRET_KEY), []byte(JUPYTERHUB_HASH_KEY), jsonData)
 	if err != nil {
 		fmt.Println("Error encrypting data:", err)
 		return
@@ -139,10 +156,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Convert encrypted data to base64 for easy transmission
 	// encryptedDataString := base64.StdEncoding.EncodeToString(jsonData)
 
-	fmt.Println("Encrypted Data : ", encryptedDataString)
+	fmt.Println("Encrypted Data : ", token)
 	fmt.Println("Time Now : ", time.Now().Add(time.Second*10).Unix())
 	// Redirect to JupyterHub login with encrypted token as query param
-	http.Redirect(w, r, fmt.Sprintf("%s?token=%v", jupyterURL, encryptedDataString), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("%s?token=%v", jupyterURL, token), http.StatusFound)
 }
 
 func main() {
